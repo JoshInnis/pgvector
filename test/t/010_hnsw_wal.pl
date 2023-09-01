@@ -33,6 +33,7 @@ sub test_index_replay
 	my $primary_result = $node_primary->safe_psql("postgres", $queries);
 
 	# Wait for replica to catch up
+	# Do this after the primary is queried since index scan can generate WAL removing tuples
 	my $applname = $node_replica->name;
 	my $caughtup_query = "SELECT pg_current_wal_lsn() <= replay_lsn FROM pg_stat_replication WHERE application_name = '$applname';";
 	$node_primary->poll_query_until('postgres', $caughtup_query)
