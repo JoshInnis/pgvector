@@ -249,6 +249,7 @@ hnswgettuple(IndexScanDesc scan, ScanDirection dir)
 
 		/* Remove dead tuples */
 		/* Note: this causes failures with current WAL test */
+		/* TODO Ensure no issues with replicas */
 		if (scan->kill_prior_tuple && so->removedCount < 3)
 		{
 			RemoveHeapTid(scan);
