@@ -579,12 +579,8 @@ HnswSearchLayer(Datum q, List *ep, int ef, int lc, Relation index, FmgrInfo *pro
 		pairingheap_add(C, &(CreatePairingHeapNode(hc)->ph_node));
 		pairingheap_add(W, &(CreatePairingHeapNode(hc)->ph_node));
 
-		/*
-		 * Do not count elements being deleted towards ef when vacuuming. It
-		 * would be ideal to do this for inserts as well, but this could
-		 * affect insert performance.
-		 */
-		if (skipElement == NULL || list_length(hc->element->heaptids) != 0)
+		/* Do not count dead elements towards ef */
+		if (list_length(hc->element->heaptids) != 0)
 			wlen++;
 	}
 
@@ -638,12 +634,8 @@ HnswSearchLayer(Datum q, List *ep, int ef, int lc, Relation index, FmgrInfo *pro
 					pairingheap_add(C, &(CreatePairingHeapNode(ec)->ph_node));
 					pairingheap_add(W, &(CreatePairingHeapNode(ec)->ph_node));
 
-					/*
-					 * Do not count elements being deleted towards ef when
-					 * vacuuming. It would be ideal to do this for inserts as
-					 * well, but this could affect insert performance.
-					 */
-					if (skipElement == NULL || list_length(e->element->heaptids) != 0)
+					/* Do not count dead elements towards ef */
+					if (list_length(e->element->heaptids) != 0)
 					{
 						wlen++;
 

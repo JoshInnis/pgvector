@@ -59,6 +59,63 @@ GetDimensions(Relation index)
 }
 
 /*
+ * Remove deleted heap TID
+ */
+static void
+RemoveHeapTid(IndexScanDesc scan)
+{
+	HnswScanOpaque so = (HnswScanOpaque) scan->opaque;
+	Relation	index = scan->indexRelation;
+	Buffer		buf = so->buf;
+	Page		page;
+	GenericXLogState *state;
+	HnswElementTuple etup;
+	int			idx = -1;
+
+	if (!BufferIsValid(buf) || !OffsetNumberIsValid(so->offno) || !ItemPointerIsValid(&so->heaptid))
+		return;
+
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	state = GenericXLogStart(index);
+	page = GenericXLogRegisterBuffer(state, buf, 0);
+	etup = (HnswElementTuple) PageGetItem(page, PageGetItemId(page, so->offno));
+
+	Assert(HnswIsElementTuple(etup));
+
+	/* Find index */
+	for (int i = 0; i < HNSW_HEAPTIDS; i++)
+	{
+		if (!ItemPointerIsValid(&etup->heaptids[i]))
+			break;
+
+		if (ItemPointerEquals(&etup->heaptids[i], &so->heaptid))
+		{
+			idx = i;
+			break;
+		}
+	}
+
+	if (idx == -1)
+		GenericXLogAbort(state);
+	else
+	{
+		/* Move pointers forward */
+		for (int i = idx; i < HNSW_HEAPTIDS; i++)
+		{
+			if (i + 1 == HNSW_HEAPTIDS || !ItemPointerIsValid(&etup->heaptids[i + 1]))
+				ItemPointerSetInvalid(&etup->heaptids[i]);
+			else
+				ItemPointerCopy(&etup->heaptids[i + 1], &etup->heaptids[i]);
+		}
+
+		MarkBufferDirty(buf);
+		GenericXLogFinish(state);
+	}
+
+	LockBuffer(so->buf, BUFFER_LOCK_UNLOCK);
+}
+
+/*
  * Prepare for an index scan
  */
 IndexScanDesc
@@ -71,6 +128,9 @@ hnswbeginscan(Relation index, int nkeys, int norderbys)
 
 	so = (HnswScanOpaque) palloc(sizeof(HnswScanOpaqueData));
 	so->buf = InvalidBuffer;
+	ItemPointerSetInvalid(&so->heaptid);
+	so->offno = InvalidOffsetNumber;
+	so->removedCount = 0;
 	so->first = true;
 	so->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
 									   "Hnsw scan temporary context",
@@ -164,6 +224,7 @@ hnswgettuple(IndexScanDesc scan, ScanDirection dir)
 		HnswCandidate *hc = llast(so->w);
 		ItemPointer tid;
 		BlockNumber indexblkno;
+		OffsetNumber indexoffno;
 
 		/* Move to next element if no valid heap tids */
 		if (list_length(hc->element->heaptids) == 0)
@@ -174,6 +235,7 @@ hnswgettuple(IndexScanDesc scan, ScanDirection dir)
 
 		tid = llast(hc->element->heaptids);
 		indexblkno = hc->element->blkno;
+		indexoffno = hc->element->offno;
 
 		hc->element->heaptids = list_delete_last(hc->element->heaptids);
 
@@ -184,6 +246,17 @@ hnswgettuple(IndexScanDesc scan, ScanDirection dir)
 #else
 		scan->xs_ctup.t_self = *tid;
 #endif
+
+		/* Remove dead tuples */
+		if (scan->kill_prior_tuple && so->removedCount < 3)
+		{
+			RemoveHeapTid(scan);
+			so->removedCount++;
+		}
+
+		/* Keep track of info for deletes */
+		so->heaptid = *tid;
+		so->offno = indexoffno;
 
 		/* Unpin buffer */
 		if (BufferIsValid(so->buf))
